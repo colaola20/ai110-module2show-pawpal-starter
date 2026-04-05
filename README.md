@@ -162,6 +162,12 @@ python -m pytest tests/test_pawpal.py -v
 
 ---
 
+## 📸 Demo
+
+https://github.com/user-attachments/assets/9f214486-d224-486b-847a-e856a10eee6b
+
+
+---
 ## License
 
 This project was built as part of the AI Engineering curriculum (Module 2). It is intended for educational use.
