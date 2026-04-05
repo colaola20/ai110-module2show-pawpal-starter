@@ -1,4 +1,5 @@
 import streamlit as st
+from datetime import time as dt_time
 from pawpal_system import Frequency, Task, Pet, Owner
 
 st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="wide")
@@ -18,6 +19,8 @@ def _init_state():
         st.session_state.editing_task_idx = None
     if "editing_pet_idx" not in st.session_state:
         st.session_state.editing_pet_idx = None
+    if "new_task_use_time" not in st.session_state:
+        st.session_state.new_task_use_time = False
 
 _init_state()
 
@@ -161,6 +164,8 @@ with left:
     pet_options = {p.name: p for p in st.session_state.pets}
     pet_choices = ["(all pets)"] + list(pet_options.keys())
 
+    st.checkbox("Set specific time", key="new_task_use_time")
+
     with st.form("add_task_form", clear_on_submit=True):
         t_col1, t_col2 = st.columns(2)
         with t_col1:
@@ -175,12 +180,17 @@ with left:
                 "Frequency", [f.value for f in Frequency], index=0
             )
             task_pet_name = st.selectbox("Assigned to", pet_choices)
+            task_time_pick = st.time_input(
+                "Start time", value=dt_time(8, 0),
+                disabled=not st.session_state.new_task_use_time
+            )
 
         add_task = st.form_submit_button("➕ Add task", use_container_width=True)
 
     if add_task:
         assigned_pet = pet_options.get(task_pet_name) if task_pet_name != "(all pets)" else None
         freq = Frequency(task_frequency)
+        pinned_time = task_time_pick.strftime("%H:%M") if st.session_state.new_task_use_time else None
         new_task = Task(
             title=task_title,
             duration_minutes=int(task_duration),
@@ -188,6 +198,7 @@ with left:
             is_required=task_required,
             frequency=freq,
             pet=assigned_pet,
+            time=pinned_time,
         )
         st.session_state.tasks.append(new_task)
         if st.session_state.owner:
@@ -204,9 +215,10 @@ with left:
             status = ""
             if task.frequency == Frequency.ONCE:
                 status = " ✅" if task.is_complete else " ⏳"
+            time_label = f" · ⏰ {task.time}" if task.time else ""
             t_cols[0].markdown(
                 f"**{task.title}**{pet_label} · {task.duration_minutes} min · "
-                f"{task.priority} · {freq_label} · {req_label}{status}"
+                f"{task.priority} · {freq_label} · {req_label}{time_label}{status}"
             )
             # Mark-complete button for one-time tasks
             if task.frequency == Frequency.ONCE and not task.is_complete:
@@ -232,6 +244,11 @@ with left:
 
             # ── Inline edit form ──────────────────────────────────────────────
             if st.session_state.editing_task_idx == i:
+                _use_time_key = f"edit_use_time_{i}"
+                if _use_time_key not in st.session_state:
+                    st.session_state[_use_time_key] = bool(task.time)
+                st.checkbox("Set specific time", key=_use_time_key)
+
                 with st.form(key=f"edit_task_form_{i}"):
                     st.markdown(f"**Edit task: {task.title}**")
                     e_col1, e_col2 = st.columns(2)
@@ -256,6 +273,11 @@ with left:
                             "Assigned to", pet_choices,
                             index=pet_choices.index(current_pet_name) if current_pet_name in pet_choices else 0
                         )
+                        _existing = dt_time(*map(int, task.time.split(":"))) if task.time else dt_time(8, 0)
+                        new_time_pick = st.time_input(
+                            "Start time", value=_existing,
+                            disabled=not st.session_state[_use_time_key]
+                        )
                     save_col, cancel_col = st.columns(2)
                     save_edit = save_col.form_submit_button("💾 Save changes", use_container_width=True)
                     cancel_edit = cancel_col.form_submit_button("✕ Cancel", use_container_width=True)
@@ -267,6 +289,7 @@ with left:
                     task.is_required = new_required
                     task.frequency = Frequency(new_frequency)
                     task.pet = pet_options.get(new_pet_name) if new_pet_name != "(all pets)" else None
+                    task.time = new_time_pick.strftime("%H:%M") if st.session_state[_use_time_key] else None
                     st.session_state.editing_task_idx = None
                     st.session_state.plan = None
                     st.rerun()
@@ -299,6 +322,15 @@ with right:
         help="When checked, tasks are ordered by duration instead of priority before scheduling.",
     )
 
+    # Pet filter: show tasks for a specific pet (plus unassigned tasks) or all
+    filter_pet_choices = ["All pets"] + [p.name for p in st.session_state.pets]
+    filter_pet_name = st.selectbox(
+        "Filter by pet",
+        options=filter_pet_choices,
+        disabled=not can_generate,
+        help="Schedule only tasks assigned to this pet (plus tasks assigned to all pets).",
+    )
+
     if st.button(
         "⚙️ Generate schedule",
         use_container_width=True,
@@ -308,8 +340,15 @@ with right:
         owner = st.session_state.owner
         owner.available_minutes = available_minutes
         owner.preferences = [time_pref]
-        # Sync tasks (owner.tasks may already be correct, but reset to avoid dupes)
-        owner.tasks = list(st.session_state.tasks)
+        # Filter tasks by selected pet before scheduling
+        all_tasks = list(st.session_state.tasks)
+        if filter_pet_name == "All pets":
+            owner.tasks = all_tasks
+        else:
+            owner.tasks = [
+                t for t in all_tasks
+                if t.pet is None or t.pet.name == filter_pet_name
+            ]
         st.session_state.plan = owner.schedule_day(sort_by_time=sort_by_time)
 
     plan = st.session_state.plan
@@ -333,6 +372,9 @@ with right:
                 f"⚠️ Schedule exceeds available time by **{over} min** "
                 "(required tasks were forced in)"
             )
+
+        for w in plan.warnings:
+            st.warning(f"⚠️ {w}")
 
         st.divider()
 
