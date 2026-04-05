@@ -124,9 +124,13 @@ class Scheduler:
         """Add a task to the scheduler's task list."""
         self._tasks.append(task)
 
-    def generate_plan(self) -> DailyPlan:
-        """Build and return a DailyPlan by scheduling tasks in priority order."""
-        sorted_tasks = self._sort_by_priority()
+    def sort_by_time(self) -> list[Task]:
+        """Sort tasks by duration ascending (shortest first), then required-first."""
+        return sorted(self._tasks, key=lambda t: (not t.is_required, t.duration_minutes))
+
+    def generate_plan(self, use_time_sort: bool = False) -> DailyPlan:
+        """Build and return a DailyPlan by scheduling tasks in priority or time order."""
+        sorted_tasks = self.sort_by_time() if use_time_sort else self._sort_by_priority()
         scheduled: list[ScheduledTask] = []
         skipped: list[Task] = []
         minutes_used = 0
@@ -217,12 +221,12 @@ class Owner:
                 return hour
         return 8  # default
 
-    def schedule_day(self) -> DailyPlan:
+    def schedule_day(self, sort_by_time: bool = False) -> DailyPlan:
         """Create and return a DailyPlan for all of this owner's tasks."""
         scheduler = Scheduler(self.available_minutes, start_hour=self._resolve_start_hour())
         for task in self.tasks:
             scheduler.add_task(task)
-        return scheduler.generate_plan()
+        return scheduler.generate_plan(use_time_sort=sort_by_time)
 
     @property
     def pets(self) -> list[Pet]:
