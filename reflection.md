@@ -118,11 +118,25 @@ Core actions:
 **a. What you tested**
 
 - What behaviors did you test?
+        - Testing mark as complete functionality for different types of tasks (one-time or daily/weekly)
+        - Testing that required tasks are scheduled even if the time exceeds owner's time availability.
+        - Testing that optional task are skipped when the time exceeds owner's time availability.
+        - Testing that complete tasks are excluded from feature scheduling.
+        - Testing that incomlete one-time tasks are included in the scheduling.
+        - Tetsing that optional tasks are bumped out when the time slot are being used for required tasks.
+        - Testing that all required tasks which have the same start time are being scheduled with a warning.
+        - Testing that optional tasks are being scheduled if there a time left over.
+        - Testing if owner time preferences work for tasks that don't have a specific start time.
+        - Testing multiple preferences setting for an owner.
+        - Testing unrecognized owner's preferences.
+        - Testing adding test count functionality
 - Why were these tests important?
+    They were testing core functionality and edge cases of the Scheduler.
 
 **b. Confidence**
 
 - How confident are you that your scheduler works correctly?
+- 4.5 stars
 - What edge cases would you test next if you had more time?
 
 ---
@@ -132,6 +146,7 @@ Core actions:
 **a. What went well**
 
 - What part of this project are you most satisfied with?
+    With the Scheduler functionality. I think it's pretty solid.
 
 **b. What you would improve**
 
@@ -140,3 +155,4 @@ Core actions:
 **c. Key takeaway**
 
 - What is one important thing you learned about designing systems or working with AI on this project?
+    To make a good and reliable system, I need to really think it through.
