@@ -22,6 +22,25 @@ class Task:
         pet: "Pet | None" = None,
         time: "str | None" = None,
     ):
+        """Initialize a Task, validating priority on construction.
+
+        Args:
+            title: Human-readable task name.
+            duration_minutes: How long the task takes.
+            priority: One of "high", "medium", or "low" (case-insensitive).
+            is_required: If True the scheduler always includes this task, even
+                when it would bust the time budget.
+            frequency: ONCE, DAILY, or WEEKLY.  ONCE tasks expose
+                ``is_complete`` and are skipped after ``mark_complete()`` is
+                called.
+            pet: Optional pet this task is associated with.
+            time: Optional pinned start time in "HH:MM" (24-hour).  When set,
+                the scheduler anchors the task to that clock slot instead of
+                placing it freely.
+
+        Raises:
+            ValueError: If ``priority`` is not a recognised value.
+        """
         if priority.lower() not in self.VALID_PRIORITIES:
             raise ValueError(
                 f"Invalid priority '{priority}'. Must be one of: {', '.join(sorted(self.VALID_PRIORITIES))}"
@@ -33,13 +52,19 @@ class Task:
         self.frequency = frequency
         self.pet = pet  # links task to a specific pet; None means applies to all pets
         self.time = time  # optional pinned start time "HH:MM"; None = scheduler decides
-        self.is_complete: bool | None = False if frequency == Frequency.ONCE else None
+        self.is_complete: bool | None = False if frequency.value == Frequency.ONCE.value else None
 
     def mark_complete(self):
         """Mark a one-time task as completed."""
-        if self.frequency != Frequency.ONCE:
+        if self.frequency.value != Frequency.ONCE.value:
             raise ValueError(f"mark_complete() is only valid for one-time tasks, but '{self.title}' has frequency '{self.frequency.value}'")
         self.is_complete = True
+
+    def undo_complete(self):
+        """Undo completion for a one-time task, marking it as not complete."""
+        if self.frequency.value != Frequency.ONCE.value:
+            raise ValueError(f"undo_complete() is only valid for one-time tasks, but '{self.title}' has frequency '{self.frequency.value}'")
+        self.is_complete = False
 
     def priority_value(self) -> int:
         """Return the numeric priority value for sorting."""
@@ -49,12 +74,20 @@ class Task:
         """Return a concise string representation of the task."""
         pet_label = f", pet={self.pet.name!r}" if self.pet else ""
         time_label = f", time={self.time!r}" if self.time else ""
-        complete_label = f", complete={self.is_complete}" if self.frequency == Frequency.ONCE else ""
+        complete_label = f", complete={self.is_complete}" if self.frequency.value == Frequency.ONCE.value else ""
         return f"Task({self.title!r}, {self.duration_minutes}min, {self.priority}, required={self.is_required}{pet_label}{time_label}{complete_label})"
 
 
 class Pet:
     def __init__(self, name: str, species: str, age: int, special_needs: list[str] = None):
+        """Initialize a Pet.
+
+        Args:
+            name: The pet's name.
+            species: Species string (e.g. "dog", "cat").
+            age: Age in years.
+            special_needs: Optional list of care notes (e.g. ["diabetic", "senior diet"]).
+        """
         self.name = name
         self.species = species
         self.age = age
@@ -81,6 +114,22 @@ class DailyPlan:
         available_minutes: int,
         warnings: list[str] = None,
     ):
+        """Store the output of one scheduling pass.
+
+        Args:
+            scheduled_tasks: Ordered list of tasks the scheduler placed on the
+                timeline, each paired with a start time and a placement reason.
+            skipped_tasks: Tasks that could not fit within the available budget
+                or were displaced by a higher-priority pinned task.
+            total_minutes_used: Sum of durations for all scheduled tasks.
+            available_minutes: The owner's stated daily time budget.
+            warnings: Human-readable conflict or over-budget notices generated
+                during scheduling.
+
+        Sets ``is_over_budget = True`` when ``total_minutes_used`` exceeds
+        ``available_minutes`` (which can happen when required tasks are forced
+        in despite no remaining budget).
+        """
         self.scheduled_tasks = scheduled_tasks
         self.skipped_tasks = skipped_tasks
         self.total_minutes_used = total_minutes_used
@@ -121,6 +170,14 @@ class Scheduler:
     START_HOUR_BY_PREFERENCE = {"morning": 8, "afternoon": 13, "evening": 17}
 
     def __init__(self, available_minutes: int, start_hour: int = 8):
+        """Initialize the Scheduler with a time budget and a day start hour.
+
+        Args:
+            available_minutes: Total minutes the owner has available for pet
+                care tasks in a single day.
+            start_hour: Hour (0–23) at which the schedule clock begins.
+                Defaults to 8 (8 AM).
+        """
         self.available_minutes = available_minutes
         self.start_hour = start_hour
         self._tasks: list[Task] = []
@@ -130,12 +187,56 @@ class Scheduler:
         self._tasks.append(task)
 
     def sort_by_time(self) -> list[Task]:
-        """Sort tasks by duration ascending (shortest first), then required-first."""
+        """Sort tasks shortest-first, with required tasks before optional ones.
+
+        The composite sort key is ``(not is_required, duration_minutes)`` so
+        required tasks bubble to the front and, within each group, shorter
+        tasks appear first.  This mirrors the ``use_time_sort=True`` path in
+        ``generate_plan``.
+
+        Returns:
+            A new sorted list; the internal ``_tasks`` list is not mutated.
+        """
         return sorted(self._tasks, key=lambda t: (not t.is_required, t.duration_minutes))
 
     def generate_plan(self, use_time_sort: bool = False) -> DailyPlan:
-        """Build and return a DailyPlan, respecting pinned times and filling gaps with free tasks."""
-        active = [t for t in self._tasks if not (t.frequency == Frequency.ONCE and t.is_complete)]
+        """Build and return a DailyPlan for the current task list.
+
+        Algorithm overview
+        ------------------
+        1. **Filter** already-completed one-time tasks from the active set.
+        2. **Conflict detection** — group pinned tasks (those with a fixed
+           ``time``) by slot.  Multiple required tasks in the same slot get a
+           warning but are all scheduled; optional tasks at a slot that already
+           has a required task are silently displaced to the skipped list.
+        3. **Partition** active tasks into *pinned* (anchored to a clock time)
+           and *free* (placed wherever budget allows).  Free tasks are sorted
+           either by duration ascending (``use_time_sort=True``) or by
+           required-first / priority-descending (default).
+        4. **Budget reservation** — the full cost of required tasks is
+           pre-subtracted so optional tasks only consume what is genuinely
+           spare.
+        5. **Interleaved placement loop** — advances a ``current_minute``
+           cursor through the day:
+           - Before each pinned task, as many free tasks as fit in the gap are
+             placed via ``_schedule_free``.
+           - The pinned task is then anchored at its exact clock time (the
+             cursor jumps forward if needed).
+           - Required tasks are always scheduled even if they exceed the budget,
+             causing ``DailyPlan.is_over_budget`` to be set.
+           - After all pinned tasks, any remaining free tasks fill the tail.
+        6. Returns a ``DailyPlan`` with the ordered schedule, skipped tasks,
+           time totals, and any conflict warnings.
+
+        Args:
+            use_time_sort: When True, sort free tasks shortest-first (good for
+                maximising the number of tasks completed).  When False (default),
+                sort by required-first then descending priority value.
+
+        Returns:
+            A ``DailyPlan`` describing what to do, when, and why.
+        """
+        active = [t for t in self._tasks if not (t.frequency.value == Frequency.ONCE.value and t.is_complete)]
 
         # Detect conflicts among pinned tasks and resolve them:
         # - Two+ required at the same time → warn, schedule all (required can't be dropped)
@@ -176,21 +277,34 @@ class Scheduler:
         minutes_used = 0
         current_minute = self.start_hour * 60
 
+        # Reserve budget for all required tasks so optional tasks only use what's left
+        total_required_minutes = sum(
+            t.duration_minutes for t in active if t.is_required and id(t) not in bumped_to_free
+        )
+        optional_budget = max(0, self.available_minutes - total_required_minutes)
+        optional_minutes_used = 0
+
         pinned_idx = 0
         free_idx = 0
 
         def _schedule_free(task: Task) -> bool:
             """Schedule a free task at current_minute. Returns True if scheduled."""
-            nonlocal minutes_used, current_minute
-            fits = self._fits_in_time(task, minutes_used)
-            if task.is_required or fits:
+            nonlocal minutes_used, current_minute, optional_minutes_used
+            if task.is_required:
+                fits = self._fits_in_time(task, minutes_used)
                 reason = (
-                    "Required task" if task.is_required and fits
-                    else "Required task (exceeds available time — must still complete)" if task.is_required
-                    else f"Priority: {task.priority}"
+                    "Required task" if fits
+                    else "Required task (exceeds available time — must still complete)"
                 )
                 scheduled.append(ScheduledTask(task=task, start_time=self._format_time(current_minute), reason=reason))
                 minutes_used += task.duration_minutes
+                current_minute = min(current_minute + task.duration_minutes, self.MAX_CLOCK_MINUTES)
+                return True
+            # Optional task: only schedule if it fits within the budget left after all required tasks
+            if optional_minutes_used + task.duration_minutes <= optional_budget:
+                scheduled.append(ScheduledTask(task=task, start_time=self._format_time(current_minute), reason=f"Priority: {task.priority}"))
+                minutes_used += task.duration_minutes
+                optional_minutes_used += task.duration_minutes
                 current_minute = min(current_minute + task.duration_minutes, self.MAX_CLOCK_MINUTES)
                 return True
             skipped.append(task)
@@ -218,15 +332,19 @@ class Scheduler:
                 # Jump forward to the pinned time if we're not there yet
                 if current_minute < pinned_start:
                     current_minute = pinned_start
-                fits = self._fits_in_time(task, minutes_used)
-                if task.is_required or fits:
+                if task.is_required:
+                    fits = self._fits_in_time(task, minutes_used)
                     reason = (
-                        f"Required task · pinned at {task.time}" if task.is_required and fits
-                        else f"Required task · pinned at {task.time} (exceeds available time — must still complete)" if task.is_required
-                        else f"Priority: {task.priority} · pinned at {task.time}"
+                        f"Required task · pinned at {task.time}" if fits
+                        else f"Required task · pinned at {task.time} (exceeds available time — must still complete)"
                     )
                     scheduled.append(ScheduledTask(task=task, start_time=task.time, reason=reason))
                     minutes_used += task.duration_minutes
+                    current_minute = min(pinned_start + task.duration_minutes, self.MAX_CLOCK_MINUTES)
+                elif optional_minutes_used + task.duration_minutes <= optional_budget:
+                    scheduled.append(ScheduledTask(task=task, start_time=task.time, reason=f"Priority: {task.priority} · pinned at {task.time}"))
+                    minutes_used += task.duration_minutes
+                    optional_minutes_used += task.duration_minutes
                     current_minute = min(pinned_start + task.duration_minutes, self.MAX_CLOCK_MINUTES)
                 else:
                     skipped.append(task)
@@ -240,7 +358,16 @@ class Scheduler:
         return DailyPlan(scheduled, skipped, minutes_used, self.available_minutes, warnings)
 
     def _sort_by_priority(self) -> list[Task]:
-        """Sort tasks required-first, then by descending priority value."""
+        """Sort tasks required-first, then by descending priority value.
+
+        Uses a single composite key ``(is_required, priority_value)`` sorted in
+        reverse so that ``True`` (required) and higher numeric priority both
+        sort to the front.  This is the default free-task ordering used by
+        ``generate_plan`` when ``use_time_sort=False``.
+
+        Returns:
+            A new sorted list; ``_tasks`` is not mutated.
+        """
         # Primary: is_required (True first), secondary: priority_value (high first)
         return sorted(self._tasks, key=lambda t: (t.is_required, t.priority_value()), reverse=True)
 
@@ -264,6 +391,15 @@ class Scheduler:
 
 class Owner:
     def __init__(self, name: str, available_minutes: int, preferences: list[str] = None):
+        """Initialize an Owner.
+
+        Args:
+            name: The owner's display name.
+            available_minutes: Daily time budget (minutes) available for pet care.
+            preferences: Optional list of scheduling preferences.  The first
+                entry that matches a key in ``Scheduler.START_HOUR_BY_PREFERENCE``
+                ("morning", "afternoon", "evening") sets the schedule start hour.
+        """
         self.name = name
         self.available_minutes = available_minutes
         self.preferences: list[str] = preferences or []
@@ -290,7 +426,7 @@ class Owner:
                     setattr(task, key, value)
                 # Keep is_complete in sync if frequency was changed
                 if "frequency" in kwargs:
-                    task.is_complete = False if task.frequency == Frequency.ONCE else None
+                    task.is_complete = False if task.frequency.value == Frequency.ONCE.value else None
                 return
         raise ValueError(f"Task '{title}' not found")
 
@@ -299,7 +435,16 @@ class Owner:
         self.available_minutes = minutes
 
     def _resolve_start_hour(self) -> int:
-        """Derive the schedule start hour from the owner's time-of-day preferences."""
+        """Derive the schedule start hour from the owner's time-of-day preferences.
+
+        Iterates through ``self.preferences`` in order and returns the hour
+        mapped by ``Scheduler.START_HOUR_BY_PREFERENCE`` for the first match
+        ("morning" → 8, "afternoon" → 13, "evening" → 17).  Falls back to 8
+        if no recognised preference is found.
+
+        Returns:
+            Start hour as an integer (0–23).
+        """
         for pref in self.preferences:
             hour = Scheduler.START_HOUR_BY_PREFERENCE.get(pref.lower())
             if hour is not None:
@@ -307,7 +452,20 @@ class Owner:
         return 8  # default
 
     def schedule_day(self, sort_by_time: bool = False) -> DailyPlan:
-        """Create and return a DailyPlan for all of this owner's tasks."""
+        """Create and return a DailyPlan for all of this owner's tasks.
+
+        Constructs a fresh ``Scheduler`` seeded with the owner's time budget
+        and preferred start hour, loads every task from ``self.tasks``, then
+        delegates to ``Scheduler.generate_plan``.
+
+        Args:
+            sort_by_time: Passed through to ``generate_plan``.  When True,
+                free tasks are ordered shortest-first; when False (default),
+                they are ordered required-first then by descending priority.
+
+        Returns:
+            A ``DailyPlan`` ready to display or explain.
+        """
         scheduler = Scheduler(self.available_minutes, start_hour=self._resolve_start_hour())
         for task in self.tasks:
             scheduler.add_task(task)

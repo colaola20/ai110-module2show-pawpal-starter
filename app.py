@@ -213,19 +213,25 @@ with left:
             freq_label = task.frequency.value
             req_label = "required" if task.is_required else "optional"
             status = ""
-            if task.frequency == Frequency.ONCE:
+            if task.frequency.value == Frequency.ONCE.value:
                 status = " ✅" if task.is_complete else " ⏳"
             time_label = f" · ⏰ {task.time}" if task.time else ""
             t_cols[0].markdown(
                 f"**{task.title}**{pet_label} · {task.duration_minutes} min · "
                 f"{task.priority} · {freq_label} · {req_label}{time_label}{status}"
             )
-            # Mark-complete button for one-time tasks
-            if task.frequency == Frequency.ONCE and not task.is_complete:
-                if t_cols[1].button("✅", key=f"done_{i}", help="Mark complete"):
-                    task.mark_complete()
-                    st.session_state.plan = None
-                    st.rerun()
+            # Mark-complete / undo-complete button for one-time tasks
+            if task.frequency.value == Frequency.ONCE.value:
+                if not task.is_complete:
+                    if t_cols[1].button("✅", key=f"done_{i}", help="Mark complete"):
+                        task.mark_complete()
+                        st.session_state.plan = None
+                        st.rerun()
+                else:
+                    if t_cols[1].button("↩️", key=f"undo_{i}", help="Undo complete"):
+                        task.undo_complete()
+                        st.session_state.plan = None
+                        st.rerun()
             else:
                 t_cols[1].empty()
 
@@ -278,9 +284,19 @@ with left:
                             "Start time", value=_existing,
                             disabled=not st.session_state[_use_time_key]
                         )
+                    undo_complete_edit = None
+                    if task.frequency.value == Frequency.ONCE.value and task.is_complete:
+                        st.info("This task is marked complete.")
+                        undo_complete_edit = st.form_submit_button("↩️ Undo complete", use_container_width=True)
                     save_col, cancel_col = st.columns(2)
                     save_edit = save_col.form_submit_button("💾 Save changes", use_container_width=True)
                     cancel_edit = cancel_col.form_submit_button("✕ Cancel", use_container_width=True)
+
+                if undo_complete_edit:
+                    task.undo_complete()
+                    st.session_state.editing_task_idx = None
+                    st.session_state.plan = None
+                    st.rerun()
 
                 if save_edit:
                     task.title = new_title

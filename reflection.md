@@ -90,6 +90,7 @@ Core actions:
 
 - Describe one tradeoff your scheduler makes.
     if the task is required it can exceed owner's time availability. In this case it's a trade off between available time and task urgency.
+    If two task have the same start time and only one of them is required than required task gets prioritized over not required task.
 - Why is that tradeoff reasonable for this scenario?
     Sometime something needs to be done no matter if we have time for it. For example, if a pet is sick, we have to go to the veterinarian even if we don't have time for it.
 
@@ -100,12 +101,15 @@ Core actions:
 **a. How you used AI**
 
 - How did you use AI tools during this project (for example: design brainstorming, debugging, refactoring)?
+    I use AI for all steps of the project. I break down tasks into smaller ones and were giving AI only small task with specific instructions. All sugested logic especially for UML and system designed were checked and redifined by me.
 - What kinds of prompts or questions were most helpful?
+    Spesific small requests.
 
 **b. Judgment and verification**
 
 - Describe one moment where you did not accept an AI suggestion as-is.
 - How did you evaluate or verify what the AI suggested?
+    Using common sense, pytests and UI testing on the website.
 
 ---
 
